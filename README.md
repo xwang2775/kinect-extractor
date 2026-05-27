@@ -123,6 +123,42 @@ python extract_multiperson.py study1_output_1.mkv -o sample_run/ --n-persons 2
      Person 1 (right): 600 frames (100% presence) → sample_run/person_1_right_joints.csv
 ```
 
+#### ⚠️ Known limitation when the scene has > N visible people
+
+`--n-persons N` makes MediaPipe return **at most N detections per frame**.
+If the scene actually contains more than N people, the detector picks the N
+most confident at each moment, and which N it picks can shift over time —
+the tracker then locks onto whoever is in front of it.
+
+For `study1_output_1.mkv` (a ~9-min recording with **3-4 children** visible
+in most frames, run with `--n-persons 2`), the result has this rough
+pattern, confirmed by inspecting the overlay video:
+
+| Time window      | What's tracked                                |
+| ---------------- | --------------------------------------------- |
+| Beginning (~1 min) | One of the two tracked skeletons is on a different child than the intended subject |
+| Middle (~4-7 min)  | Both tracked skeletons land on the intended pair |
+| End (~last min)    | One skeleton drifts to a different child again |
+
+Numbers from this run:
+
+- `person_0_left`: detected in **7740 / 8048 frames (96.2 %)**
+- `person_1_right`: detected in **7906 / 8048 frames (98.2 %)**
+- Both detected simultaneously: **7618 / 8048 frames (94.7 %)**
+
+These presence percentages count *any* skeleton, not the *intended* person —
+so they don't capture the wrong-subject problem above. For a noisy
+multi-person scene, always sanity-check `multiperson_pose.mp4` to confirm
+the right people are being tracked, especially near the start and end of
+the recording.
+
+**How to recover.** If a small minority of frames are wrong, you can drop
+them from the CSV using `multiperson_pose.mp4` to identify the affected
+time ranges. If they're wrong throughout, bump `--n-persons` to track every
+visible person and post-select the ones you want by stable identifiers
+(e.g. clothing color from the torso histogram, or initial `nose_x` if the
+intended pair starts in a known position).
+
 ### 4. Merge everything into one JSON
 
 ```bash
@@ -182,6 +218,82 @@ All scripts share these flags (where applicable):
 
 `extract_multiperson.py` additionally exposes `--n-persons` and `--alpha`
 (position vs. color cost weight, 0..1).
+
+## How to read the CSV files
+
+All three pose CSVs (`joint_positions.csv`, `multiperson_joints.csv`,
+`person_N_joints.csv`) share the same wide-format layout: **one row per
+(frame, person)** with one set of 4 columns per landmark.
+
+### Bookkeeping columns (always present)
+
+| Column           | Meaning                                                          |
+| ---------------- | ---------------------------------------------------------------- |
+| `frame`          | Frame index in the source MKV (0-based)                          |
+| `timestamp_sec`  | `frame / fps` rounded to 4 decimals                              |
+| `detected`       | (single-person CSV only) `True` if a pose was found in that frame |
+| `person_id`      | (multi-person CSV) Tracker ID, **0 = leftmost on average**       |
+| `side`           | (multi-person, n=2 only) `"left"` / `"right"` — alias for person_id |
+
+### Landmark columns (33 landmarks × 4 columns = 132 columns)
+
+For each of the 33 landmarks (see *Landmark reference* below), the CSV
+contains four columns named `<landmark>_x`, `<landmark>_y`, `<landmark>_z`,
+`<landmark>_vis`. So `joint_positions.csv` has 3 + 132 = **135 columns** and
+`multiperson_joints.csv` has 3 (or 4 with `side`) + 132 = **135 / 136**
+columns.
+
+| Suffix | Range          | Coordinate system                                          |
+| ------ | -------------- | ---------------------------------------------------------- |
+| `_x`   | 0.0 – 1.0      | Normalized horizontal position — **0 = left edge of frame, 1 = right edge** |
+| `_y`   | 0.0 – 1.0      | Normalized vertical position — **0 = top of frame, 1 = bottom** |
+| `_z`   | typically -1…1 | Relative depth, hip-centered, **negative = closer to camera**, in the same units as `_x` (not meters) |
+| `_vis` | 0.0 – 1.0      | Detector's visibility confidence for that landmark         |
+
+Multiply `_x` by the frame width (1280 for Azure Kinect color) and `_y` by
+the frame height (720) to get pixel coordinates. The `_z` values are not
+calibrated; use `world_landmarks` in `all_data.json` if you need real
+3-D meters.
+
+### Practical example
+
+```python
+import pandas as pd
+df = pd.read_csv("output/person_0_left_joints.csv")
+
+# Pixel position of left wrist throughout the recording
+W, H = 1280, 720
+wrist_px = df[["timestamp_sec"]].copy()
+wrist_px["x_px"] = df["left_wrist_x"] * W
+wrist_px["y_px"] = df["left_wrist_y"] * H
+
+# Drop low-confidence detections
+hi = df[df["left_wrist_vis"] > 0.6]
+
+# Frame-to-frame wrist speed (normalized units / sec) — see joint_speed.png
+import numpy as np
+fps = 15
+dx, dy = df["left_wrist_x"].diff(), df["left_wrist_y"].diff()
+df["left_wrist_speed"] = np.sqrt(dx**2 + dy**2) * fps
+```
+
+### `depth_stats.csv` — one row per depth frame
+
+| Column          | Unit | Meaning                                                |
+| --------------- | ---- | ------------------------------------------------------ |
+| `frame`         | —    | Depth frame index                                      |
+| `timestamp_sec` | s    | `frame / fps_depth` (15 fps for Azure Kinect depth)    |
+| `valid_ratio`   | 0–1  | Fraction of pixels with depth in `[DEPTH_MIN_MM, DEPTH_MAX_MM]` |
+| `depth_mean_mm` | mm   | Mean depth of valid pixels                             |
+| `depth_std_mm`  | mm   | Stddev — indicator of scene complexity / motion        |
+| `depth_min/max_mm` | mm | Extrema of valid pixels                              |
+| `depth_p25/p75_mm` | mm | 25th / 75th percentile (interquartile range)         |
+
+Pose CSVs use **frame indices into the color stream** while `depth_stats.csv`
+uses **depth-frame indices**. They line up by `timestamp_sec`, not by
+`frame`, because color and depth run at the same nominal 15 fps but are not
+guaranteed to be frame-locked. The `build_json.py` merger joins on
+timestamp.
 
 ## Landmark reference
 
