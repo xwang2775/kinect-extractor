@@ -1,0 +1,12 @@
+opencv-python>=4.7
+# Pin <0.10.30: newer MediaPipe releases require libGLESv2.so.2 to be
+# present as a system shared library (apt: libgles2). 0.10.14 uses the
+# pre-c-bindings pipeline and only needs EGL, which most Linux desktops
+# already have.
+mediapipe>=0.10,<0.10.30
+numpy>=1.24
+pandas>=2.0
+av>=11.0
+tqdm>=4.65
+matplotlib>=3.7
+scipy>=1.10

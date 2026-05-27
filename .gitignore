@@ -1,0 +1,27 @@
+# MediaPipe model (auto-downloaded by the scripts)
+pose_landmarker_full.task
+
+# User input videos
+*.mkv
+*.mp4
+!examples/*.mp4
+
+# Generated output directories
+output/
+output_*/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+.pytest_cache/
+*.egg-info/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+*.swp
